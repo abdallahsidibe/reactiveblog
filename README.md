@@ -1,6 +1,6 @@
 # ReactiveBlog — Spring WebFlux + Angular
 
-Application Full Stack de blog construite pour apprendre **Spring WebFlux** et **Angular** à travers un exemple concret. La chaîne est entièrement non-bloquante de l'interface jusqu'à la base de données.
+Application Full Stack de blog construite pour apprendre **Spring WebFlux** et **Angular** à travers un exemple concret. La chaîne est entièrement non-bloquante de l'interface jusqu'à la base de données, avec un cache Redis réactif.
 
 ---
 
@@ -11,6 +11,7 @@ Application Full Stack de blog construite pour apprendre **Spring WebFlux** et *
 | Frontend | Angular 17 · TypeScript · RxJS · Reactive Forms |
 | Backend | Java 21 · Spring Boot 3.3 · Spring WebFlux · Project Reactor |
 | Données | Spring Data R2DBC · PostgreSQL 16+ |
+| Cache | Redis 7 · Lettuce (client réactif) · Spring Data Redis Reactive |
 | Migrations | Flyway |
 | Tests | StepVerifier · WebTestClient · JUnit 5 · Mockito |
 | Build | Maven 3.9 · Angular CLI 17 |
@@ -66,6 +67,11 @@ ArticleController
     │
     ▼
 ArticleService
+    │  ┌─────────────────────────────────┐
+    │  │ Cache Redis (Lettuce)           │
+    │  │  HIT  → retour immédiat        │
+    │  │  MISS → BDD puis mise en cache │
+    │  └─────────────────────────────────┘
     │
     ▼
 ArticleRepository (ReactiveCrudRepository)
@@ -88,7 +94,8 @@ reactiveblog/
 │   └── src/main/java/com/reactiveblog/
 │       ├── ReactiveBlogApplication.java
 │       ├── config/
-│       │   └── R2dbcConfig.java             # @EnableR2dbcRepositories + @EnableR2dbcAuditing
+│       │   ├── R2dbcConfig.java             # @EnableR2dbcRepositories + @EnableR2dbcAuditing
+│       │   └── RedisConfig.java             # ReactiveRedisTemplate<String, ArticleResponseDto>
 │       ├── model/
 │       │   └── Article.java                 # Entité R2DBC (@Table, @Id, @CreatedDate)
 │       ├── dto/
@@ -99,7 +106,7 @@ reactiveblog/
 │       ├── repository/
 │       │   └── ArticleRepository.java        # ReactiveCrudRepository + @Query custom
 │       ├── service/
-│       │   └── ArticleService.java           # Logique métier — Mono/Flux, flatMap, switchIfEmpty
+│       │   └── ArticleService.java           # Logique métier + cache Redis
 │       ├── controller/
 │       │   └── ArticleController.java        # Endpoints WebFlux (@RestController)
 │       └── exception/
@@ -120,8 +127,8 @@ reactiveblog/
 │           ├── article-detail/               # Détail + suppression
 │           └── article-form/                 # Formulaire création / édition
 │
-├── docker-compose.yml                        # postgres + backend + frontend
-├── docker-compose.dev.yml                    # postgres uniquement (dev local)
+├── docker-compose.yml                        # postgres + redis + backend + frontend
+├── docker-compose.dev.yml                    # postgres + redis (dev local)
 └── README.md
 ```
 
@@ -137,13 +144,15 @@ reactiveblog/
 - Angular CLI 17+ (`npm install -g @angular/cli`)
 - Docker Desktop
 
-### 1 — Base de données
+### 1 — Infrastructure (PostgreSQL + Redis)
 
 ```bash
 docker compose -f docker-compose.dev.yml up -d
 ```
 
-Flyway exécute `V1__create_articles_table.sql` automatiquement au premier démarrage du backend.
+Démarre :
+- **PostgreSQL** sur le port `5432` — Flyway exécute `V1__create_articles_table.sql` automatiquement au premier démarrage du backend
+- **Redis** sur le port `6379`
 
 ### 2 — Backend
 
@@ -155,13 +164,15 @@ mvn spring-boot:run
 
 Variables d'environnement (valeurs par défaut) :
 
-| Variable | Défaut |
-|---|---|
-| `DB_HOST` | `localhost` |
-| `DB_PORT` | `5432` |
-| `DB_NAME` | `reactiveblog` |
-| `DB_USER` | `postgres` |
-| `DB_PASSWORD` | `postgres` |
+| Variable | Défaut | Description |
+|---|---|---|
+| `DB_HOST` | `localhost` | Hôte PostgreSQL |
+| `DB_PORT` | `5432` | Port PostgreSQL |
+| `DB_NAME` | `reactiveblog` | Nom de la base |
+| `DB_USER` | `postgres` | Utilisateur |
+| `DB_PASSWORD` | `postgres` | Mot de passe |
+| `REDIS_HOST` | `localhost` | Hôte Redis |
+| `REDIS_PORT` | `6379` | Port Redis |
 
 ### 3 — Frontend
 
@@ -185,6 +196,7 @@ mvn test
 ```bash
 docker compose up --build
 # postgres  → port 5432
+# redis     → port 6379
 # backend   → port 8080
 # frontend  → port 4200 (Nginx)
 ```
@@ -237,6 +249,132 @@ Base URL : `http://localhost:8080/api/articles`
 
 ---
 
+## Cache Redis
+
+### Pourquoi Redis ?
+
+Sans cache, chaque requête `GET /api/articles` génère un aller-retour PostgreSQL. Redis stocke les résultats en mémoire avec un TTL : les lectures suivantes retournent directement depuis Redis sans toucher la base.
+
+```
+Sans cache :  GET → PostgreSQL → 10-50 ms
+Avec cache :  GET → Redis HIT  → < 1 ms
+```
+
+### Stratégie de cache
+
+| Opération | Clé Redis | Type | TTL | Action |
+|---|---|---|---|---|
+| `findAll` | `articles:all` | List | 10 min | HIT → `LRANGE 0 -1` / MISS → BDD + `RPUSH` |
+| `findById(id)` | `article:{id}` | String | 10 min | HIT → `GET` / MISS → BDD + `SET` |
+| `create` | `articles:all` | — | — | `DEL articles:all` |
+| `update(id)` | `articles:all`, `article:{id}` | — | — | `DEL` des deux clés |
+| `delete(id)` | `articles:all`, `article:{id}` | — | — | `DEL` des deux clés |
+| `search` | — | — | — | Non caché (résultats trop dynamiques) |
+
+### Fonctionnement détaillé
+
+**findAll — cache MISS (premier appel) :**
+```
+redis.hasKey("articles:all") → false
+  → repository.findAllByOrderByCreatedAtDesc()
+  → collectList()
+  → redis RPUSH "articles:all" [article1, article2, ...]
+  → redis EXPIRE "articles:all" 600
+  → retourne les articles
+```
+
+**findAll — cache HIT (appels suivants) :**
+```
+redis.hasKey("articles:all") → true
+  → redis LRANGE "articles:all" 0 -1
+  → retourne directement (pas de BDD)
+```
+
+**findById — cache MISS puis HIT :**
+```
+# MISS
+redis.opsForValue().get("article:1") → vide
+  → repository.findById(1)
+  → redis SET "article:1" "{...}" PX 600000
+  → retourne le DTO
+
+# HIT (appel suivant)
+redis.opsForValue().get("article:1") → ArticleResponseDto
+  → retourne directement
+```
+
+**Invalidation sur écriture :**
+```
+# create → invalide la liste
+redis DEL "articles:all"
+
+# update(1) → invalide liste + article individuel
+redis DEL "articles:all" "article:1"
+
+# delete(1) → invalide liste + article individuel
+redis DEL "articles:all" "article:1"
+```
+
+### Sérialisation
+
+Les objets `ArticleResponseDto` sont sérialisés en JSON via `Jackson2JsonRedisSerializer` configuré avec l'`ObjectMapper` Spring Boot (JavaTimeModule inclus → `Instant` sérialisé en ISO-8601).
+
+```
+redis-cli get "article:1"
+→ {"id":1,"title":"Spring WebFlux","content":"...","author":"Alice",
+   "createdAt":"2026-10-03T20:00:00Z","updatedAt":"2026-10-03T20:00:00Z"}
+```
+
+### Observer Redis en temps réel
+
+```bash
+# Via Docker (pas besoin d'installer redis-cli)
+docker exec -it reactiveblog-redis-dev redis-cli monitor
+```
+
+Sortie observée lors des requêtes :
+
+```
+# GET /api/articles/1 — MISS puis SET
+"GET" "article:1"
+"SET" "article:1" "{\"id\":1,...}" "PX" "600000"
+
+# GET /api/articles/1 — HIT (GET seul, pas de BDD)
+"GET" "article:1"
+
+# GET /api/articles — MISS
+"EXISTS" "articles:all"
+"RPUSH" "articles:all" "{\"id\":1,...}" "{\"id\":2,...}"
+"EXPIRE" "articles:all" "600"
+
+# POST /api/articles — invalide la liste
+"DEL" "articles:all"
+
+# DELETE /api/articles/1 — invalide les deux clés
+"DEL" "articles:all" "article:1"
+```
+
+**Autres commandes utiles :**
+
+```bash
+# Lister toutes les clés en cache
+docker exec -it reactiveblog-redis-dev redis-cli keys "*"
+
+# Lire un article en cache
+docker exec -it reactiveblog-redis-dev redis-cli get "article:1"
+
+# Voir le TTL restant (secondes)
+docker exec -it reactiveblog-redis-dev redis-cli ttl "article:1"
+
+# Lire la liste articles:all
+docker exec -it reactiveblog-redis-dev redis-cli lrange "articles:all" 0 -1
+
+# Vider le cache manuellement
+docker exec -it reactiveblog-redis-dev redis-cli flushall
+```
+
+---
+
 ## Concepts Reactor clés
 
 ### Mono vs Flux
@@ -274,11 +412,15 @@ repository.findById(id)
 | Opérateur | Usage |
 |---|---|
 | `map` | Article → DTO (synchrone) |
-| `flatMap` | Enchaîner un I/O (save, delete) |
-| `switchIfEmpty` | Transformer un vide en erreur |
+| `flatMap` | Enchaîner un I/O (save, delete, redis) |
+| `flatMapMany` | `Mono<List>` → `Flux` (cache findAll) |
+| `switchIfEmpty` | Transformer un vide en erreur ou déclencher un fallback |
 | `filter` | Rejeter si condition non remplie |
 | `then` | Ignorer la valeur, retourner `Mono<Void>` |
+| `thenReturn` | `then()` + émettre une valeur fixe |
+| `thenMany` | `then()` + souscrire à un `Flux` |
 | `doOnNext` | Logger sans altérer le flux |
+| `collectList` | `Flux<T>` → `Mono<List<T>>` (pour RPUSH Redis) |
 
 ### StepVerifier — tester des Mono/Flux
 
@@ -327,15 +469,16 @@ Le pipe `async` s'abonne à l'Observable et se **désabonne automatiquement** à
 
 ---
 
-## Les trois piliers réactifs
+## Les piliers réactifs
 
 | Outil | Rôle |
 |---|---|
 | **Spring WebFlux** | Construit l'application serveur réactive (Netty, Mono/Flux) |
 | **Spring Data R2DBC** | Accès réactif à PostgreSQL (pas de JDBC, pas de blocage) |
+| **Spring Data Redis Reactive** | Cache réactif via Lettuce (Mono/Flux, pas de blocage) |
 | **WebClient** | Appels HTTP sortants réactifs vers des services externes |
 
-Ces trois outils sont complémentaires et non interchangeables. WebFlux ne remplace pas R2DBC, et R2DBC ne remplace pas WebClient.
+Ces outils sont complémentaires et non interchangeables. Lettuce (client Redis réactif) respecte le modèle non-bloquant de Netty — contrairement à Jedis qui bloquerait l'event loop.
 
 ---
 
@@ -355,3 +498,4 @@ Ces trois outils sont complémentaires et non interchangeables. WebFlux ne rempl
 12. Gestion globale des erreurs
 13. Docker / Docker Compose
 14. Tests finaux
+15. **Cache Redis réactif** (Lettuce, ReactiveRedisTemplate, stratégie HIT/MISS/invalidation)
