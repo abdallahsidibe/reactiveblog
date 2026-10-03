@@ -44,6 +44,12 @@
             <scope>runtime</scope>
         </dependency>
 
+        <!-- ===== Spring Data Redis Reactive (Lettuce) ===== -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-redis-reactive</artifactId>
+        </dependency>
+
         <!-- ===== Bean Validation (Jakarta) ===== -->
         <dependency>
             <groupId>org.springframework.boot</groupId>

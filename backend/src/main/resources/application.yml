@@ -2,6 +2,12 @@ spring:
   application:
     name: reactive-blog
 
+  # ── Redis : cache réactif (Lettuce) ──────────────────────────────────────
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+
   # ── R2DBC : connexion réactive à PostgreSQL ──────────────────────────────
   # Spring Boot lit ces propriétés et crée automatiquement une ConnectionFactory
   # (l'équivalent réactif de DataSource).

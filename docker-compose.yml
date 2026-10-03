@@ -18,6 +18,18 @@ services:
       timeout: 5s
       retries: 5
 
+  # ── Redis : cache réactif ─────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: reactiveblog-redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
   # ── Backend Spring Boot ───────────────────────────────────────────────────
   backend:
     build:
@@ -30,10 +42,14 @@ services:
       DB_NAME: reactiveblog
       DB_USER: postgres
       DB_PASSWORD: postgres
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
     ports:
       - "8080:8080"
     depends_on:
       postgres:
+        condition: service_healthy
+      redis:
         condition: service_healthy
 
   # ── Frontend Angular ──────────────────────────────────────────────────────
