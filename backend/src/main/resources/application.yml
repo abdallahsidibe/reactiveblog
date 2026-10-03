@@ -1,0 +1,39 @@
+spring:
+  application:
+    name: reactive-blog
+
+  # ── R2DBC : connexion réactive à PostgreSQL ──────────────────────────────
+  # Spring Boot lit ces propriétés et crée automatiquement une ConnectionFactory
+  # (l'équivalent réactif de DataSource).
+  # Le driver r2dbc-postgresql ouvre des connexions TCP non-bloquantes :
+  # aucun thread n'est jamais mis en attente d'une réponse base de données.
+  r2dbc:
+    url: r2dbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:reactiveblog}
+    username: ${DB_USER:postgres}
+    password: ${DB_PASSWORD:postgres}
+    pool:
+      initial-size: 5
+      max-size: 20
+      max-idle-time: 30m
+      max-life-time: 1h
+      validation-query: SELECT 1
+
+  # ── Flyway : migrations SQL ───────────────────────────────────────────────
+  # Flyway utilise JDBC uniquement au démarrage pour exécuter les scripts SQL.
+  # Ce n'est PAS du code applicatif bloquant : c'est une opération de setup
+  # unique, avant que le serveur Netty démarre.
+  flyway:
+    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:reactiveblog}
+    user: ${DB_USER:postgres}
+    password: ${DB_PASSWORD:postgres}
+    locations: classpath:db/migration
+    baseline-on-migrate: true
+
+server:
+  port: 8080
+
+logging:
+  level:
+    io.r2dbc: DEBUG
+    org.springframework.r2dbc: DEBUG
+    com.reactiveblog: INFO
