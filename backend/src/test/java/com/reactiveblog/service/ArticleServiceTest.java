@@ -15,11 +15,16 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.data.redis.core.ReactiveListOperations;
+import org.springframework.data.redis.core.ReactiveRedisTemplate;
+import org.springframework.data.redis.core.ReactiveValueOperations;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.test.StepVerifier;
 
+import java.time.Duration;
 import java.time.Instant;
+import java.util.List;
 
 import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
@@ -40,6 +45,17 @@ import static org.mockito.Mockito.*;
  *
  * Sans .verify() → rien ne se passe. Le Publisher n'est jamais souscrit.
  * C'est l'erreur classique des débutants en tests Reactor.
+ *
+ * Stratégie Redis dans les tests :
+ *
+ *   Tous les stubs Redis sont configurés en cache MISS (hasKey → false,
+ *   opsForValue().get() → Mono.empty()) dans le @BeforeEach commun.
+ *   Ainsi les tests existants continuent à vérifier la logique BDD sans
+ *   avoir à connaître les détails du cache.
+ *
+ *   Les opérations d'écriture Redis (set, rightPushAll, expire, delete)
+ *   sont stubbées en mode lenient() pour ne pas faire échouer les tests
+ *   qui ne les vérifient pas explicitement.
  */
 @ExtendWith(MockitoExtension.class)
 class ArticleServiceTest {
@@ -49,6 +65,22 @@ class ArticleServiceTest {
 
     @Mock
     private ArticleMapper mapper;
+
+    /*
+     * Mocks Redis — @InjectMocks les injecte dans ArticleService via
+     * le constructeur @RequiredArgsConstructor (Lombok).
+     *
+     * valueOps / listOps sont des mocks des opérations Redis :
+     * ReactiveRedisTemplate délègue à ces objets pour chaque type de structure.
+     */
+    @Mock
+    private ReactiveRedisTemplate<String, ArticleResponseDto> redis;
+
+    @Mock
+    private ReactiveValueOperations<String, ArticleResponseDto> valueOps;
+
+    @Mock
+    private ReactiveListOperations<String, ArticleResponseDto> listOps;
 
     @InjectMocks
     private ArticleService service;
@@ -80,6 +112,28 @@ class ArticleServiceTest {
         requestDto = new ArticleRequestDto(
                 "Spring WebFlux", "Contenu de l'article", "Alice"
         );
+
+        /*
+         * Stubs Redis communs — cache MISS par défaut.
+         *
+         * lenient() supprime l'avertissement "unnecessary stubbing" pour les
+         * stubs qui ne sont pas consommés par tous les tests du @Nested.
+         *
+         * Cache toujours MISS → les tests passent par la BDD comme avant.
+         */
+        lenient().when(redis.hasKey(anyString())).thenReturn(Mono.just(false));
+        lenient().when(redis.opsForValue()).thenReturn(valueOps);
+        lenient().when(redis.opsForList()).thenReturn(listOps);
+        lenient().when(valueOps.get(anyString())).thenReturn(Mono.empty());
+        lenient().when(valueOps.set(anyString(), any(), any(Duration.class)))
+                .thenReturn(Mono.just(true));
+        lenient().when(listOps.rightPushAll(anyString(), anyList()))
+                .thenReturn(Mono.just(0L));
+        lenient().when(redis.expire(anyString(), any(Duration.class)))
+                .thenReturn(Mono.just(true));
+        // delete(K... keys) — varargs : on couvre les appels à 1 et 2 clés
+        lenient().when(redis.delete(anyString())).thenReturn(Mono.just(1L));
+        lenient().when(redis.delete(anyString(), anyString())).thenReturn(Mono.just(2L));
     }
 
     // ── findAll ───────────────────────────────────────────────────

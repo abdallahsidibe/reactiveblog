@@ -8,26 +8,45 @@ import com.reactiveblog.mapper.ArticleMapper;
 import com.reactiveblog.repository.ArticleRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.data.redis.core.ReactiveRedisTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
+import java.time.Duration;
+
 /*
- * ArticleService — couche métier réactive.
+ * ArticleService — couche métier réactive avec cache Redis.
  *
  * Règle fondamentale : cette classe ne doit JAMAIS appeler .block().
  * Chaque méthode retourne un Mono<T> ou un Flux<T> que le Controller
  * s'abonnera implicitement via le framework WebFlux.
  *
+ * Stratégie de cache :
+ *
+ *   findAll()      → clé "articles:all" (Redis List)
+ *                    HIT  : redis.opsForList().range(0, -1) → Flux<ArticleResponseDto>
+ *                    MISS : BDD → collectList → rightPushAll + expire → Flux
+ *
+ *   findById(id)   → clé "article:{id}" (Redis String / valeur scalaire)
+ *                    HIT  : redis.opsForValue().get(key) → Mono<ArticleResponseDto>
+ *                    MISS : BDD → opsForValue().set(key, dto, TTL)
+ *
+ *   create / update / delete → invalidation :
+ *                    delete("articles:all") + delete("article:{id}")
+ *
  * Les opérateurs Reactor utilisés ici :
  *
- *  .map()         → transforme chaque élément (synchrone, en mémoire)
- *  .flatMap()     → transforme chaque élément en Publisher (async, I/O)
+ *  .map()           → transforme chaque élément (synchrone, en mémoire)
+ *  .flatMap()       → transforme chaque élément en Publisher (async, I/O)
+ *  .flatMapMany()   → Mono → Flux (un Publisher qui en émet plusieurs)
  *  .switchIfEmpty() → agit si le Mono/Flux est vide (0 élément émis)
- *  .filter()      → ne laisse passer que les éléments qui matchent
- *  .then()        → ignore la valeur, retourne Mono<Void> à la complétion
- *  .doOnNext()    → effet de bord (log) sans altérer le flux
+ *  .filter()        → ne laisse passer que les éléments qui matchent
+ *  .then()          → ignore la valeur, retourne Mono<Void> à la complétion
+ *  .thenReturn()    → then() + émet une valeur fixe
+ *  .thenMany()      → then() + souscrit à un Flux
+ *  .doOnNext()      → effet de bord (log) sans altérer le flux
  */
 @Slf4j
 @Service
@@ -36,6 +55,14 @@ public class ArticleService {
 
     private final ArticleRepository repository;
     private final ArticleMapper mapper;
+    private final ReactiveRedisTemplate<String, ArticleResponseDto> redis;
+
+    private static final String CACHE_ALL_KEY = "articles:all";
+    private static final Duration CACHE_TTL = Duration.ofMinutes(10);
+
+    private static String articleKey(Long id) {
+        return "article:" + id;
+    }
 
     // ──────────────────────────────────────────────────────────────
     // READ
@@ -44,41 +71,82 @@ public class ArticleService {
     /*
      * Retourne tous les articles triés par date décroissante.
      *
-     * repository.findAllByOrderByCreatedAtDesc() → Flux<Article>
-     *   .map(mapper::toDto)                      → Flux<ArticleResponseDto>
+     * On vérifie d'abord si la clé "articles:all" existe en Redis.
+     * redis.hasKey()  → Mono<Boolean>
+     *   .flatMapMany() → si true  : lire la liste Redis
+     *                  → si false : appeler fetchFromDbAndCacheAll()
      *
-     * .map() est synchrone : la transformation Article→DTO ne fait
-     * aucun I/O donc on n'a pas besoin de flatMap.
+     * hasKey + range évite l'ambiguïté d'un Flux vide (liste vide ≠ cache absent).
      */
     public Flux<ArticleResponseDto> findAll() {
         log.info("Récupération de tous les articles");
+        return redis.hasKey(CACHE_ALL_KEY)
+                .flatMapMany(cached -> {
+                    if (cached) {
+                        log.debug("Cache HIT : {}", CACHE_ALL_KEY);
+                        return redis.opsForList().range(CACHE_ALL_KEY, 0, -1);
+                    }
+                    log.debug("Cache MISS : {}", CACHE_ALL_KEY);
+                    return fetchFromDbAndCacheAll();
+                });
+    }
+
+    /*
+     * Charge les articles depuis la BDD, pousse la liste dans Redis
+     * puis émet les articles un par un.
+     *
+     * .collectList()         → Flux<Article> → Mono<List<Article>>
+     * .flatMapMany(list ->   → Mono<List> → Flux (aplatissage)
+     *   rightPushAll(...)    → RPUSH Redis  → Mono<Long> (taille de la liste)
+     *   .then(expire(...))   → TTL sur la clé → Mono<Boolean>
+     *   .thenMany(Flux.fromIterable(list)) → émettre chaque DTO
+     * )
+     *
+     * Si la liste est vide (aucun article), on ne pousse rien dans Redis
+     * (évite de stocker une liste vide avec TTL qui masquerait les futurs inserts).
+     */
+    private Flux<ArticleResponseDto> fetchFromDbAndCacheAll() {
         return repository.findAllByOrderByCreatedAtDesc()
-                .map(mapper::toDto);
+                .map(mapper::toDto)
+                .collectList()
+                .flatMapMany(list -> {
+                    if (list.isEmpty()) {
+                        return Flux.fromIterable(list);
+                    }
+                    return redis.opsForList().rightPushAll(CACHE_ALL_KEY, list)
+                            .then(redis.expire(CACHE_ALL_KEY, CACHE_TTL))
+                            .thenMany(Flux.fromIterable(list));
+                });
     }
 
     /*
      * Retourne un article par son id.
      *
-     * repository.findById(id) → Mono<Article>  (vide si non trouvé)
-     *   .switchIfEmpty(...)   → transforme le Mono vide en erreur
-     *   .map(mapper::toDto)   → Mono<ArticleResponseDto>
+     * redis.opsForValue().get(key) → Mono<ArticleResponseDto>
+     *   .switchIfEmpty(...)         → cache MISS : BDD puis mise en cache
      *
-     * switchIfEmpty() est l'équivalent réactif du if (optional.isEmpty()).
-     * Mono.error() propage une exception dans le pipeline — le GlobalExceptionHandler
-     * (étape 12) la capturera et retournera un 404.
+     * En cas de MISS on appelle set(key, dto, TTL) qui retourne Mono<Boolean>.
+     * On enchaîne .thenReturn(dto) pour ré-émettre le DTO dans le pipeline.
      */
     public Mono<ArticleResponseDto> findById(Long id) {
         log.info("Récupération de l'article id={}", id);
-        return repository.findById(id)
-                .switchIfEmpty(Mono.error(new ArticleNotFoundException(id)))
-                .map(mapper::toDto);
+        String key = articleKey(id);
+        return redis.opsForValue().get(key)
+                .doOnNext(dto -> log.debug("Cache HIT : {}", key))
+                .switchIfEmpty(
+                        repository.findById(id)
+                                .switchIfEmpty(Mono.error(new ArticleNotFoundException(id)))
+                                .map(mapper::toDto)
+                                .flatMap(dto -> redis.opsForValue()
+                                        .set(key, dto, CACHE_TTL)
+                                        .doOnSuccess(ok -> log.debug("Cache SET : {}", key))
+                                        .thenReturn(dto))
+                );
     }
 
     /*
      * Recherche par mot-clé dans le titre ou le contenu.
-     *
-     * On entoure le keyword de % pour le ILIKE PostgreSQL.
-     * Le .map() en aval transforme chaque Article en DTO.
+     * Pas mis en cache : les résultats sont trop dynamiques (dépendent du keyword).
      */
     public Flux<ArticleResponseDto> search(String keyword) {
         log.info("Recherche d'articles avec keyword='{}'", keyword);
@@ -92,22 +160,13 @@ public class ArticleService {
     // ──────────────────────────────────────────────────────────────
 
     /*
-     * Crée un nouvel article.
+     * Crée un nouvel article, puis invalide le cache "articles:all".
      *
-     * Étape 1 : vérifier qu'aucun article n'a déjà ce titre.
-     *   repository.existsByTitleIgnoreCase() → Mono<Boolean>
+     * redis.delete(CACHE_ALL_KEY) → Mono<Long> (nombre de clés supprimées)
+     * .thenReturn(saved)          → ré-émet le DTO sauvegardé
      *
-     * Étape 2 : si le titre existe → erreur 409.
-     *   .filter(exists -> !exists)  → laisse passer seulement si false
-     *   .switchIfEmpty(...)         → si filtré (true), on propage l'erreur
-     *
-     * Étape 3 : convertir le DTO en entité, sauvegarder, convertir en DTO.
-     *   .flatMap(...)               → l'opération save() retourne un Mono,
-     *                                 on utilise flatMap (pas map) car on
-     *                                 "aplatit" un Mono<Mono<Article>> en Mono<Article>
-     *
-     *   Règle : map   → f(T) → U          (résultat direct)
-     *           flatMap → f(T) → Mono<U>  (résultat enveloppé dans un Publisher)
+     * On n'invalide pas "article:{id}" car l'article vient d'être créé
+     * et n'est pas encore dans le cache.
      */
     @Transactional
     public Mono<ArticleResponseDto> create(ArticleRequestDto dto) {
@@ -117,6 +176,7 @@ public class ArticleService {
                 .switchIfEmpty(Mono.error(new ArticleAlreadyExistsException(dto.title())))
                 .flatMap(notExists -> repository.save(mapper.toEntity(dto)))
                 .map(mapper::toDto)
+                .flatMap(saved -> redis.delete(CACHE_ALL_KEY).thenReturn(saved))
                 .doOnNext(saved -> log.info("Article créé avec id={}", saved.id()));
     }
 
@@ -125,16 +185,13 @@ public class ArticleService {
     // ──────────────────────────────────────────────────────────────
 
     /*
-     * Met à jour un article existant.
+     * Met à jour un article existant, puis invalide le cache.
      *
-     * Étape 1 : vérifier que l'article existe (404 sinon).
-     * Étape 2 : construire la nouvelle entité avec les données du DTO
-     *           en conservant l'id et createdAt de l'entité existante.
-     * Étape 3 : sauvegarder → Spring Data R2DBC détecte que l'id est non-null
-     *           et génère un UPDATE au lieu d'un INSERT.
+     * On invalide deux clés :
+     *   - "articles:all"   : la liste complète est périmée
+     *   - "article:{id}"   : la version en cache est périmée
      *
-     * .flatMap(existing -> ...)  : on est dans un contexte async (on enchaîne
-     * sur un Mono), donc flatMap pour retourner un Mono<Article>.
+     * redis.delete(Publisher<String>) accepte un Flux de clés.
      */
     @Transactional
     public Mono<ArticleResponseDto> update(Long id, ArticleRequestDto dto) {
@@ -143,6 +200,8 @@ public class ArticleService {
                 .switchIfEmpty(Mono.error(new ArticleNotFoundException(id)))
                 .flatMap(existing -> repository.save(mapper.toEntity(dto, existing)))
                 .map(mapper::toDto)
+                .flatMap(updated ->
+                        redis.delete(CACHE_ALL_KEY, articleKey(id)).thenReturn(updated))
                 .doOnNext(updated -> log.info("Article id={} mis à jour", updated.id()));
     }
 
@@ -151,16 +210,12 @@ public class ArticleService {
     // ──────────────────────────────────────────────────────────────
 
     /*
-     * Supprime un article par son id.
+     * Supprime un article par son id, puis invalide le cache.
      *
-     * On vérifie d'abord l'existence (404 sinon) puis on supprime.
-     *
-     * .then() : ignore l'Article émis par findById, retourne Mono<Void>
-     *           qui signale la fin de la suppression sans émettre de valeur.
-     *
-     * Pourquoi ne pas appeler directement deleteById() ?
-     * Parce que deleteById() ne retourne pas d'erreur si l'id n'existe pas —
-     * il complète silencieusement. En vérifiant d'abord, on retourne un 404 propre.
+     * .then(redis.delete(...).then()) :
+     *   Le premier .then() enchaîne après la suppression BDD (ignore Void).
+     *   redis.delete() retourne Mono<Long>.
+     *   Le second .then() le convertit en Mono<Void> pour respecter la signature.
      */
     @Transactional
     public Mono<Void> delete(Long id) {
@@ -168,6 +223,7 @@ public class ArticleService {
         return repository.findById(id)
                 .switchIfEmpty(Mono.error(new ArticleNotFoundException(id)))
                 .flatMap(article -> repository.deleteById(article.getId()))
+                .then(redis.delete(CACHE_ALL_KEY, articleKey(id)).then())
                 .doOnSuccess(v -> log.info("Article id={} supprimé", id));
     }
 }
