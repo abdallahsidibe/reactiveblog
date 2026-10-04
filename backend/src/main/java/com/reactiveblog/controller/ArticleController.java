@@ -80,7 +80,7 @@ public class ArticleController {
      * → le GlobalExceptionHandler (étape 12) retourne HTTP 404.
      */
     @GetMapping("/{id}")
-    public Mono<ResponseEntity<ArticleResponseDto>> findById(@PathVariable Long id) {
+    public Mono<ResponseEntity<ArticleResponseDto>> findById(@PathVariable String id) {
         log.info("GET /api/articles/{}", id);
         return service.findById(id)
                 .map(ResponseEntity::ok);
@@ -120,7 +120,7 @@ public class ArticleController {
 
     @PutMapping("/{id}")
     public Mono<ResponseEntity<ArticleResponseDto>> update(
-            @PathVariable Long id,
+            @PathVariable String id,
             @Valid @RequestBody Mono<ArticleRequestDto> requestMono) {
 
         log.info("PUT /api/articles/{}", id);
@@ -141,7 +141,7 @@ public class ArticleController {
      * HTTP 204 : succès sans body (standard REST pour un DELETE).
      */
     @DeleteMapping("/{id}")
-    public Mono<ResponseEntity<Void>> delete(@PathVariable Long id) {
+    public Mono<ResponseEntity<Void>> delete(@PathVariable String id) {
         log.info("DELETE /api/articles/{}", id);
         return service.delete(id)
                 .then(Mono.just(ResponseEntity.<Void>noContent().build()));

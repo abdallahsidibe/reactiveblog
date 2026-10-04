@@ -42,8 +42,8 @@ class ArticleControllerTest {
     @BeforeEach
     void setUp() {
         Instant now = Instant.now();
-        article1 = new ArticleResponseDto(1L, "Spring WebFlux", "Contenu 1", "Alice", now, now);
-        article2 = new ArticleResponseDto(2L, "R2DBC Guide",   "Contenu 2", "Bob",   now, now);
+        article1 = new ArticleResponseDto("1", "Spring WebFlux", "Contenu 1", "Alice", now, now);
+        article2 = new ArticleResponseDto("2", "R2DBC Guide",   "Contenu 2", "Bob",   now, now);
         validRequest = new ArticleRequestDto("Nouveau titre", "Nouveau contenu", "Charlie");
     }
 
@@ -97,7 +97,7 @@ class ArticleControllerTest {
         @Test
         @DisplayName("retourne 200 avec l'article si trouvé")
         void shouldReturn200WhenFound() {
-            when(service.findById(1L)).thenReturn(Mono.just(article1));
+            when(service.findById("1")).thenReturn(Mono.just(article1));
 
             webTestClient.get().uri("/api/articles/1")
                     .exchange()
@@ -109,8 +109,8 @@ class ArticleControllerTest {
         @Test
         @DisplayName("retourne 404 si non trouvé")
         void shouldReturn404WhenNotFound() {
-            when(service.findById(99L))
-                    .thenReturn(Mono.error(new ArticleNotFoundException(99L)));
+            when(service.findById("99"))
+                    .thenReturn(Mono.error(new ArticleNotFoundException("99")));
 
             webTestClient.get().uri("/api/articles/99")
                     .exchange()
@@ -156,7 +156,7 @@ class ArticleControllerTest {
         @Test
         @DisplayName("retourne 200 avec l'article mis à jour")
         void shouldReturn200WhenUpdated() {
-            when(service.update(eq(1L), any())).thenReturn(Mono.just(article1));
+            when(service.update(eq("1"), any())).thenReturn(Mono.just(article1));
 
             webTestClient.put().uri("/api/articles/1")
                     .contentType(MediaType.APPLICATION_JSON)
@@ -170,8 +170,8 @@ class ArticleControllerTest {
         @Test
         @DisplayName("retourne 404 si non trouvé")
         void shouldReturn404WhenNotFound() {
-            when(service.update(eq(99L), any()))
-                    .thenReturn(Mono.error(new ArticleNotFoundException(99L)));
+            when(service.update(eq("99"), any()))
+                    .thenReturn(Mono.error(new ArticleNotFoundException("99")));
 
             webTestClient.put().uri("/api/articles/99")
                     .contentType(MediaType.APPLICATION_JSON)
@@ -188,7 +188,7 @@ class ArticleControllerTest {
         @Test
         @DisplayName("retourne 204 No Content si supprimé")
         void shouldReturn204WhenDeleted() {
-            when(service.delete(1L)).thenReturn(Mono.empty());
+            when(service.delete("1")).thenReturn(Mono.empty());
 
             webTestClient.delete().uri("/api/articles/1")
                     .exchange()
@@ -198,8 +198,8 @@ class ArticleControllerTest {
         @Test
         @DisplayName("retourne 404 si non trouvé")
         void shouldReturn404WhenNotFound() {
-            when(service.delete(99L))
-                    .thenReturn(Mono.error(new ArticleNotFoundException(99L)));
+            when(service.delete("99"))
+                    .thenReturn(Mono.error(new ArticleNotFoundException("99")));
 
             webTestClient.delete().uri("/api/articles/99")
                     .exchange()

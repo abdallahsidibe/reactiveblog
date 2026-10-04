@@ -7,29 +7,27 @@ import lombok.NoArgsConstructor;
 import org.springframework.data.annotation.CreatedDate;
 import org.springframework.data.annotation.Id;
 import org.springframework.data.annotation.LastModifiedDate;
-import org.springframework.data.relational.core.mapping.Column;
-import org.springframework.data.relational.core.mapping.Table;
+import org.springframework.data.mongodb.core.mapping.Document;
 
 import java.time.Instant;
 
 /*
- * Entité R2DBC.
+ * Entité MongoDB.
  *
- * Différences clés avec une entité JPA :
+ * Différences clés avec une entité R2DBC :
  *
- *  JPA (@Entity)          │  R2DBC (@Table)
- * ────────────────────────┼────────────────────────────────────────
- *  @Entity                │  @Table
- *  @GeneratedValue        │  @Id suffit (BIGSERIAL côté SQL)
- *  Lazy loading           │  Pas de lazy loading : tout est explicite
- *  Session / cache L1     │  Pas de session, pas de cache
- *  @Column (javax)        │  @Column (spring.data.relational)
- *  EntityManager          │  ConnectionFactory (réactif)
+ *  R2DBC (@Table)                  │  MongoDB (@Document)
+ * ─────────────────────────────────┼──────────────────────────────────────
+ *  @Table("articles")              │  @Document(collection = "articles")
+ *  id: Long (BIGSERIAL PostgreSQL) │  id: String (ObjectId MongoDB, 24 hex)
+ *  @Column("created_at")           │  Pas nécessaire (champs = noms Java)
+ *  Flyway pour le schéma           │  Pas de schéma (schemaless)
+ *  Connexions JDBC + R2DBC         │  Driver Reactive MongoDB uniquement
  *
- * R2DBC ne gère pas les relations (@OneToMany, etc.).
- * Pour les relations, on charge manuellement via des jointures réactives.
+ * L'id est null à la création : MongoDB génère automatiquement un ObjectId.
+ * Spring Data le mappe sur un String via le codec BSON intégré.
  */
-@Table("articles")
+@Document(collection = "articles")
 @Data
 @Builder
 @NoArgsConstructor
@@ -37,12 +35,11 @@ import java.time.Instant;
 public class Article {
 
     /*
-     * @Id : Spring Data R2DBC identifie la clé primaire.
-     * Comme la colonne est BIGSERIAL (auto-incrément PostgreSQL),
-     * on laisse l'id null à la création — PostgreSQL le génère.
+     * @Id : Spring Data MongoDB identifie le champ _id du document.
+     * Null à la création → MongoDB génère un ObjectId (24 chars hex).
      */
     @Id
-    private Long id;
+    private String id;
 
     private String title;
 
@@ -51,18 +48,16 @@ public class Article {
     private String author;
 
     /*
-     * @CreatedDate : rempli automatiquement par @EnableR2dbcAuditing
-     * lors du premier INSERT. On ne le définit jamais manuellement.
+     * @CreatedDate : rempli automatiquement par @EnableMongoAuditing
+     * lors du premier save(). On ne le définit jamais manuellement.
      */
     @CreatedDate
-    @Column("created_at")
     private Instant createdAt;
 
     /*
      * @LastModifiedDate : mis à jour automatiquement par Spring Data
-     * à chaque save(). Pas besoin de trigger SQL.
+     * à chaque save().
      */
     @LastModifiedDate
-    @Column("updated_at")
     private Instant updatedAt;
 }

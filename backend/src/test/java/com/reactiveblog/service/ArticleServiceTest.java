@@ -96,7 +96,7 @@ class ArticleServiceTest {
         Instant now = Instant.now();
 
         article = Article.builder()
-                .id(1L)
+                .id("1")
                 .title("Spring WebFlux")
                 .content("Contenu de l'article")
                 .author("Alice")
@@ -105,7 +105,7 @@ class ArticleServiceTest {
                 .build();
 
         responseDto = new ArticleResponseDto(
-                1L, "Spring WebFlux", "Contenu de l'article",
+                "1", "Spring WebFlux", "Contenu de l'article",
                 "Alice", now, now
         );
 
@@ -177,10 +177,10 @@ class ArticleServiceTest {
         @Test
         @DisplayName("retourne l'article si trouvé")
         void shouldReturnArticleWhenFound() {
-            when(repository.findById(1L)).thenReturn(Mono.just(article));
+            when(repository.findById("1")).thenReturn(Mono.just(article));
             when(mapper.toDto(article)).thenReturn(responseDto);
 
-            StepVerifier.create(service.findById(1L))
+            StepVerifier.create(service.findById("1"))
                     .expectNext(responseDto)
                     .expectComplete()
                     .verify();
@@ -189,7 +189,7 @@ class ArticleServiceTest {
         @Test
         @DisplayName("retourne ArticleNotFoundException si introuvable")
         void shouldReturnErrorWhenNotFound() {
-            when(repository.findById(99L)).thenReturn(Mono.empty());
+            when(repository.findById("99")).thenReturn(Mono.empty());
 
             /*
              * .expectError(ArticleNotFoundException.class) :
@@ -197,7 +197,7 @@ class ArticleServiceTest {
              * exactement ce type d'exception.
              * Pas de .expectComplete() — l'erreur remplace la complétion.
              */
-            StepVerifier.create(service.findById(99L))
+            StepVerifier.create(service.findById("99"))
                     .expectError(ArticleNotFoundException.class)
                     .verify();
         }
@@ -253,20 +253,20 @@ class ArticleServiceTest {
                     "Titre modifié", "Nouveau contenu", "Alice"
             );
             Article updated = Article.builder()
-                    .id(1L).title("Titre modifié").content("Nouveau contenu")
+                    .id("1").title("Titre modifié").content("Nouveau contenu")
                     .author("Alice").createdAt(article.getCreatedAt())
                     .build();
             ArticleResponseDto updatedDto = new ArticleResponseDto(
-                    1L, "Titre modifié", "Nouveau contenu",
+                    "1", "Titre modifié", "Nouveau contenu",
                     "Alice", article.getCreatedAt(), Instant.now()
             );
 
-            when(repository.findById(1L)).thenReturn(Mono.just(article));
+            when(repository.findById("1")).thenReturn(Mono.just(article));
             when(mapper.toEntity(updateDto, article)).thenReturn(updated);
             when(repository.save(updated)).thenReturn(Mono.just(updated));
             when(mapper.toDto(updated)).thenReturn(updatedDto);
 
-            StepVerifier.create(service.update(1L, updateDto))
+            StepVerifier.create(service.update("1", updateDto))
                     .expectNextMatches(dto -> dto.title().equals("Titre modifié"))
                     .expectComplete()
                     .verify();
@@ -275,9 +275,9 @@ class ArticleServiceTest {
         @Test
         @DisplayName("retourne ArticleNotFoundException si introuvable")
         void shouldReturnErrorWhenNotFound() {
-            when(repository.findById(99L)).thenReturn(Mono.empty());
+            when(repository.findById("99")).thenReturn(Mono.empty());
 
-            StepVerifier.create(service.update(99L, requestDto))
+            StepVerifier.create(service.update("99", requestDto))
                     .expectError(ArticleNotFoundException.class)
                     .verify();
         }
@@ -292,30 +292,30 @@ class ArticleServiceTest {
         @Test
         @DisplayName("supprime l'article et retourne Mono<Void>")
         void shouldDeleteArticle() {
-            when(repository.findById(1L)).thenReturn(Mono.just(article));
-            when(repository.deleteById(1L)).thenReturn(Mono.empty());
+            when(repository.findById("1")).thenReturn(Mono.just(article));
+            when(repository.deleteById("1")).thenReturn(Mono.empty());
 
             /*
              * Mono<Void> complète sans émettre de valeur.
              * On n'utilise pas expectNext() — il n'y a rien à attendre.
              */
-            StepVerifier.create(service.delete(1L))
+            StepVerifier.create(service.delete("1"))
                     .expectComplete()
                     .verify();
 
-            verify(repository).deleteById(1L);
+            verify(repository).deleteById("1");
         }
 
         @Test
         @DisplayName("retourne ArticleNotFoundException si introuvable")
         void shouldReturnErrorWhenNotFound() {
-            when(repository.findById(99L)).thenReturn(Mono.empty());
+            when(repository.findById("99")).thenReturn(Mono.empty());
 
-            StepVerifier.create(service.delete(99L))
+            StepVerifier.create(service.delete("99"))
                     .expectError(ArticleNotFoundException.class)
                     .verify();
 
-            verify(repository, never()).deleteById(anyLong());
+            verify(repository, never()).deleteById(anyString());
         }
     }
 
@@ -328,7 +328,7 @@ class ArticleServiceTest {
         @Test
         @DisplayName("retourne les articles contenant le mot-clé")
         void shouldReturnMatchingArticles() {
-            when(repository.searchByKeyword("%WebFlux%")).thenReturn(Flux.just(article));
+            when(repository.searchByKeyword("WebFlux")).thenReturn(Flux.just(article));
             when(mapper.toDto(article)).thenReturn(responseDto);
 
             StepVerifier.create(service.search("WebFlux"))
@@ -340,7 +340,7 @@ class ArticleServiceTest {
         @Test
         @DisplayName("retourne Flux vide si aucun résultat")
         void shouldReturnEmptyWhenNoMatch() {
-            when(repository.searchByKeyword("%xyz123%")).thenReturn(Flux.empty());
+            when(repository.searchByKeyword("xyz123")).thenReturn(Flux.empty());
 
             StepVerifier.create(service.search("xyz123"))
                     .expectComplete()

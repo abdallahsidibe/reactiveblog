@@ -10,7 +10,6 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.redis.core.ReactiveRedisTemplate;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
@@ -60,7 +59,7 @@ public class ArticleService {
     private static final String CACHE_ALL_KEY = "articles:all";
     private static final Duration CACHE_TTL = Duration.ofMinutes(10);
 
-    private static String articleKey(Long id) {
+    private static String articleKey(String id) {
         return "article:" + id;
     }
 
@@ -128,7 +127,7 @@ public class ArticleService {
      * En cas de MISS on appelle set(key, dto, TTL) qui retourne Mono<Boolean>.
      * On enchaîne .thenReturn(dto) pour ré-émettre le DTO dans le pipeline.
      */
-    public Mono<ArticleResponseDto> findById(Long id) {
+    public Mono<ArticleResponseDto> findById(String id) {
         log.info("Récupération de l'article id={}", id);
         String key = articleKey(id);
         return redis.opsForValue().get(key)
@@ -150,8 +149,7 @@ public class ArticleService {
      */
     public Flux<ArticleResponseDto> search(String keyword) {
         log.info("Recherche d'articles avec keyword='{}'", keyword);
-        String pattern = "%" + keyword + "%";
-        return repository.searchByKeyword(pattern)
+        return repository.searchByKeyword(keyword)
                 .map(mapper::toDto);
     }
 
@@ -168,7 +166,6 @@ public class ArticleService {
      * On n'invalide pas "article:{id}" car l'article vient d'être créé
      * et n'est pas encore dans le cache.
      */
-    @Transactional
     public Mono<ArticleResponseDto> create(ArticleRequestDto dto) {
         log.info("Création d'un article : title='{}'", dto.title());
         return repository.existsByTitleIgnoreCase(dto.title())
@@ -193,8 +190,7 @@ public class ArticleService {
      *
      * redis.delete(Publisher<String>) accepte un Flux de clés.
      */
-    @Transactional
-    public Mono<ArticleResponseDto> update(Long id, ArticleRequestDto dto) {
+    public Mono<ArticleResponseDto> update(String id, ArticleRequestDto dto) {
         log.info("Mise à jour de l'article id={}", id);
         return repository.findById(id)
                 .switchIfEmpty(Mono.error(new ArticleNotFoundException(id)))
@@ -217,8 +213,7 @@ public class ArticleService {
      *   redis.delete() retourne Mono<Long>.
      *   Le second .then() le convertit en Mono<Void> pour respecter la signature.
      */
-    @Transactional
-    public Mono<Void> delete(Long id) {
+    public Mono<Void> delete(String id) {
         log.info("Suppression de l'article id={}", id);
         return repository.findById(id)
                 .switchIfEmpty(Mono.error(new ArticleNotFoundException(id)))

@@ -6,10 +6,12 @@ import java.time.Instant;
  * DTO sortant : payload de la réponse HTTP (GET / POST / PUT).
  *
  * On utilise Instant pour les dates : type supporté nativement par
- * Spring Data Auditing, R2DBC PostgreSQL et Jackson (sérialisé en ISO-8601).
+ * Spring Data Auditing, MongoDB et Jackson (sérialisé en ISO-8601).
+ *
+ * id est un String (ObjectId MongoDB : 24 chars hexadécimaux).
  */
 public record ArticleResponseDto(
-        Long id,
+        String id,
         String title,
         String content,
         String author,

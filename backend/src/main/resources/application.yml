@@ -8,38 +8,16 @@ spring:
       host: ${REDIS_HOST:localhost}
       port: ${REDIS_PORT:6379}
 
-  # ── R2DBC : connexion réactive à PostgreSQL ──────────────────────────────
-  # Spring Boot lit ces propriétés et crée automatiquement une ConnectionFactory
-  # (l'équivalent réactif de DataSource).
-  # Le driver r2dbc-postgresql ouvre des connexions TCP non-bloquantes :
-  # aucun thread n'est jamais mis en attente d'une réponse base de données.
-  r2dbc:
-    url: r2dbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:reactiveblog}
-    username: ${DB_USER:postgres}
-    password: ${DB_PASSWORD:postgres}
-    pool:
-      initial-size: 5
-      max-size: 20
-      max-idle-time: 30m
-      max-life-time: 1h
-      validation-query: SELECT 1
-
-  # ── Flyway : migrations SQL ───────────────────────────────────────────────
-  # Flyway utilise JDBC uniquement au démarrage pour exécuter les scripts SQL.
-  # Ce n'est PAS du code applicatif bloquant : c'est une opération de setup
-  # unique, avant que le serveur Netty démarre.
-  flyway:
-    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:reactiveblog}
-    user: ${DB_USER:postgres}
-    password: ${DB_PASSWORD:postgres}
-    locations: classpath:db/migration
-    baseline-on-migrate: true
+    # ── MongoDB : base de données réactive (schemaless) ──────────────────────
+    # Spring Boot auto-configure le MongoClient réactif à partir de cette URI.
+    # Pas de Flyway, pas de JDBC : connexion unique, entièrement non-bloquante.
+    mongodb:
+      uri: mongodb://${MONGO_HOST:localhost}:${MONGO_PORT:27017}/${MONGO_DB:reactiveblog}
 
 server:
   port: 8080
 
 logging:
   level:
-    io.r2dbc: DEBUG
-    org.springframework.r2dbc: DEBUG
+    org.springframework.data.mongodb: DEBUG
     com.reactiveblog: INFO
