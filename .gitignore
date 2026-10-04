@@ -16,3 +16,5 @@ frontend/dist/
 # ── Environnement ──────────────────────────────────────────────────────
 .env
 *.env.local
+
+# ── Outils locaux (couverts par le gitignore global) ───────────────────
