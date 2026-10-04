@@ -109,13 +109,31 @@ spring:
 
 ## Décision
 
-**PostgreSQL conservé** pour ce projet.
+**MongoDB adopté** (`feature/003-add-mongodb`).
 
-Justification : le modèle de données a vocation à évoluer (commentaires, tags, utilisateurs). PostgreSQL gère ces relations nativement avec des clés étrangères et des jointures. MongoDB nécessiterait soit de l'embedding (dénormalisation à maintenir) soit des références manuelles sans garantie d'intégrité.
+Le projet est actuellement centré sur une entité unique (`Article`). MongoDB simplifie la stack : plus de double connexion JDBC/R2DBC, plus de Flyway, un seul driver réactif de bout en bout.
 
-Flyway est accepté malgré la connexion JDBC bloquante car :
-1. Il s'exécute une seule fois au démarrage, hors du chemin réactif
-2. Il apporte une garantie de schéma indispensable en équipe
-3. L'alternative (migrations manuelles) est plus risquée
+### Ce que Flyway disparaît signifie concrètement
 
-**MongoDB serait pertinent** si le projet reste centré sur une entité unique (articles) sans relations, ou si la flexibilité de schéma est une exigence (contenu hétérogène, champs variables par type d'article).
+Flyway n'existait que pour une raison : PostgreSQL est schématisé. Avant le premier accès, la table `articles` devait être créée via une DDL. Flyway exécutait ce DDL au démarrage via une connexion JDBC bloquante — le seul point de blocage dans un projet 100 % réactif.
+
+MongoDB est **schemaless**. La collection `articles` est créée au premier `save()`. Il n'y a rien à migrer, donc Flyway n'a plus de rôle. La disparition de Flyway est une conséquence directe du passage à MongoDB, pas une décision indépendante.
+
+### Ce qui change dans la stack
+
+| Avant (PostgreSQL) | Après (MongoDB) |
+|---|---|
+| `spring-boot-starter-data-r2dbc` | `spring-boot-starter-data-mongodb-reactive` |
+| `r2dbc-postgresql` (driver réactif) | — (inclus dans le starter) |
+| `flyway-core` + `flyway-database-postgresql` | — |
+| `postgresql` (JDBC pour Flyway) | — |
+| `R2dbcConfig` (`@EnableR2dbcAuditing`) | `MongoConfig` (`@EnableMongoAuditing`) |
+| `id: Long` (BIGSERIAL PostgreSQL) | `id: String` (ObjectId MongoDB, 24 hex) |
+| `@Table` + `@Column` | `@Document` |
+| `@Query` SQL (`ILIKE`) | `@Query` JSON (`$regex`) |
+| `@Transactional` | Retiré (replica set requis) |
+| Connexions : JDBC (Flyway) + R2DBC (runtime) | Connexion unique : driver Reactive MongoDB |
+
+### Point de vigilance
+
+Si le projet évolue vers plusieurs entités liées (articles + commentaires + utilisateurs), MongoDB demandera soit de l'**embedding** (dénormalisation à maintenir manuellement) soit des **références sans garantie d'intégrité**. PostgreSQL redeviendrait le meilleur choix à ce stade.
