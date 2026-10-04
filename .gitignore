@@ -17,6 +17,4 @@ frontend/dist/
 .env
 *.env.local
 
-# ── Outils locaux ──────────────────────────────────────────────────────
-.claude/
-CLAUDE.md
+# ── Outils locaux (couverts par le gitignore global) ───────────────────
