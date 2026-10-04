@@ -5,6 +5,8 @@ import com.reactiveblog.dto.ArticleResponseDto;
 import com.reactiveblog.model.Article;
 import org.springframework.stereotype.Component;
 
+import java.time.Instant;
+
 /*
  * Mapper manuel Article ↔ DTO.
  *
@@ -23,14 +25,19 @@ public class ArticleMapper {
 
     /*
      * DTO entrant → entité.
-     * Utilisé lors d'un POST (création) ou PUT (mise à jour).
-     * L'id est null à la création : PostgreSQL (BIGSERIAL) le génère.
+     * Utilisé lors d'un POST (création).
+     * L'id est null : MongoDB génère un ObjectId.
+     * createdAt et updatedAt sont définis ici explicitement :
+     * l'auditing réactif de Spring Data est désactivé en mode multi-modules.
      */
     public Article toEntity(ArticleRequestDto dto) {
+        Instant now = Instant.now();
         return Article.builder()
                 .title(dto.title())
                 .content(dto.content())
                 .author(dto.author())
+                .createdAt(now)
+                .updatedAt(now)
                 .build();
     }
 
@@ -45,7 +52,7 @@ public class ArticleMapper {
                 .content(dto.content())
                 .author(dto.author())
                 .createdAt(existing.getCreatedAt())
-                // updatedAt sera mis à jour automatiquement par @LastModifiedDate
+                .updatedAt(Instant.now())
                 .build();
     }
 
