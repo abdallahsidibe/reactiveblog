@@ -16,3 +16,8 @@ frontend/dist/
 # ── Environnement ──────────────────────────────────────────────────────
 .env
 *.env.local
+
+# ── Claude Code — garder uniquement les skills partagés ────────────────
+.claude/
+!.claude/
+!.claude/skills/
